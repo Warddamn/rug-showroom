@@ -1,0 +1,26 @@
+{
+  "name": "rug-showroom",
+  "version": "0.0.1",
+  "description": "Jaipur Living VR rug showroom for Meta Quest 3 (WebXR, three.js)",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite --mode https --port 5173",
+    "dev:http": "vite --port 5174 --strictPort",
+    "build": "vite build",
+    "preview": "vite preview --port 4173"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "private": "true",
+  "dependencies": {
+    "three": "0.186.0"
+  },
+  "devDependencies": {
+    "@iwer/devui": "2.4.0",
+    "@vitejs/plugin-basic-ssl": "2.3.0",
+    "iwer": "2.4.0",
+    "vite": "7.1.7"
+  }
+}
