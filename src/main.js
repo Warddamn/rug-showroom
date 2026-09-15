@@ -5,7 +5,6 @@
 
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
-import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { Locomotion } from './locomotion.js';
 import { Hud } from './hud.js';
@@ -16,6 +15,7 @@ const RUG_W = 8 * FT;   // 2.438 m across
 const RUG_L = 10 * FT;  // 3.048 m deep
 const RUG_T = 0.012;    // 12 mm slab, roughly a hand-knotted pile + backing
 const FLOOR_SIZE = 12;  // metres
+const FOVEATION_REQUESTED = 0.66; // medium; the probe reports what the browser actually applied
 
 const statusEl = document.getElementById('status');
 const setStatus = (msg) => { statusEl.textContent = msg; };
@@ -50,9 +50,7 @@ async function maybeInstallEmulator() {
 }
 
 function makeGridTexture() {
-  // 1 ft grid, heavier line every 5 ft, drawn once into a 2 m x 2 m tile.
-  // 2 m is not a whole number of feet, so draw the tile at 1 ft resolution
-  // over a 10 ft square instead and repeat it.
+  // A 10 ft square tile drawn at 1 ft resolution, heavier line every 5 ft, repeated over the floor.
   const feet = 10, px = 1024, c = document.createElement('canvas');
   c.width = c.height = px;
   const g = c.getContext('2d');
@@ -97,7 +95,7 @@ async function main() {
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.xr.enabled = true;
   renderer.xr.setReferenceSpaceType('local-floor');
-  renderer.xr.setFoveation(0.66); // Quest Browser snaps this to low/medium/high; medium to start
+  renderer.xr.setFoveation(FOVEATION_REQUESTED);
   document.body.appendChild(renderer.domElement);
   document.body.appendChild(VRButton.createButton(renderer));
 
@@ -105,16 +103,19 @@ async function main() {
   scene.background = new THREE.Color(0xe9e4da);
 
   // Neutral studio environment for sheen and reflections; no file download needed.
+  // The helper scene is disposed right after baking so it does not pad the probe counts.
   const pmrem = new THREE.PMREMGenerator(renderer);
-  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  const room = new RoomEnvironment();
+  scene.environment = pmrem.fromScene(room, 0.04).texture;
   scene.environmentIntensity = 0.7;
+  room.dispose();
   pmrem.dispose();
 
   const sun = new THREE.DirectionalLight(0xfff3df, 2.2);
   sun.position.set(3, 6, 2);
   scene.add(sun);
 
-  // Floor with a 1 ft grid (heavier line every 5 ft) so a tape measure has references.
+  // Floor with a 1 ft grid (heavier line every 5 ft) so distances can be read.
   const floor = new THREE.Mesh(
     new THREE.PlaneGeometry(FLOOR_SIZE, FLOOR_SIZE).rotateX(-Math.PI / 2),
     new THREE.MeshStandardMaterial({ map: makeGridTexture(), roughness: 0.9, metalness: 0 })
@@ -132,7 +133,7 @@ async function main() {
   slab.name = 'slab';
   scene.add(slab);
 
-  // Corner posts so the tape measure has something to touch.
+  // Corner posts so a controller can be set down exactly at each corner.
   const postGeo = new THREE.CylinderGeometry(0.01, 0.01, 0.12, 12);
   const postMat = new THREE.MeshStandardMaterial({ color: 0x9e3b1f, roughness: 0.6 });
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
@@ -159,7 +160,11 @@ async function main() {
   camera.position.set(0, 1.6, 0);
   player.add(camera);
 
-  const modelFactory = new XRControllerModelFactory();
+  // Controllers: a small local marker at each grip instead of downloaded 3D
+  // models, so nothing is fetched from the internet mid-session and the frame
+  // numbers stay constant. The gold ray shows where each controller points.
+  const gripGeo = new THREE.BoxGeometry(0.035, 0.03, 0.09);
+  const gripMat = new THREE.MeshStandardMaterial({ color: 0x3a3027, roughness: 0.5 });
   const controllers = [];
   for (let i = 0; i < 2; i++) {
     const controller = renderer.xr.getController(i);
@@ -167,34 +172,44 @@ async function main() {
     controller.addEventListener('disconnected', () => { controller.userData.inputSource = null; });
     player.add(controller);
     const grip = renderer.xr.getControllerGrip(i);
-    grip.add(modelFactory.createControllerModel(grip));
+    grip.add(new THREE.Mesh(gripGeo, gripMat));
     player.add(grip);
     controllers.push(controller);
   }
 
-  const locomotion = new Locomotion({ renderer, scene, player, camera, controllers, floor, snapDegrees: 30 });
+  const locomotion = new Locomotion({ renderer, scene, player, camera, controllers, floor, slab, snapDegrees: 30 });
   const hud = new Hud(camera);
-  const probe = new Probe({ renderer, camera, scene, controllers, emulated });
+  const probe = new Probe({ renderer, camera, scene, controllers, emulated, foveationRequested: FOVEATION_REQUESTED });
 
   const probeEl = document.getElementById('probe');
   document.getElementById('copyProbe').addEventListener('click', async () => {
     const text = probe.asText();
+    probeEl.textContent = text;
     try { await navigator.clipboard.writeText(text); setStatus('Copied. Paste it into a message to Claude.'); }
-    catch { setStatus('Clipboard blocked in this browser. Take a screenshot instead: Meta button + right trigger.'); }
+    catch { setStatus('Clipboard blocked in this browser. Take a screenshot of this page instead (Meta button + right trigger).'); }
   });
   document.getElementById('toggleHud').addEventListener('click', (e) => {
     hud.visible = !hud.visible;
     e.target.textContent = hud.visible ? 'Hide in-VR readout' : 'Show in-VR readout';
   });
 
+  let lastTime = 0, hudClock = 0, panelClock = 0;
+
   renderer.xr.addEventListener('sessionstart', () => {
-    probe.onSessionStart(renderer.xr.getSession());
+    const session = renderer.xr.getSession();
+    lastTime = 0; // the first VR frame must not count the 2D-to-VR setup gap
+    session.addEventListener('visibilitychange', () => {
+      lastTime = 0; // a Meta-button pause is not a slow frame
+      probe.onVisibilityChange(session.visibilityState);
+    });
+    probe.onSessionStart(session);
     setStatus('VR session running.');
   });
   renderer.xr.addEventListener('sessionend', () => {
+    lastTime = 0;
     probe.onSessionEnd();
     probeEl.textContent = probe.asText();
-    setStatus('VR session ended. The numbers above are from that session. Tap "Copy probe values".');
+    setStatus('VR session ended. The numbers above are frozen from that session. Tap "Copy probe values".');
   });
 
   window.addEventListener('resize', () => {
@@ -203,16 +218,15 @@ async function main() {
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
 
-  let lastTime = 0, hudClock = 0, panelClock = 0;
-  renderer.setAnimationLoop((time, frame) => {
+  renderer.setAnimationLoop((time) => {
     const dt = lastTime ? time - lastTime : 0;
     lastTime = time;
-    probe.tick(dt, frame);
-    locomotion.update(dt);
+    probe.tick(dt);
+    locomotion.update();
 
     hudClock += dt; panelClock += dt;
     if (hudClock > 250) { hudClock = 0; hud.setLines(probe.hudLines()); }
-    if (panelClock > 1000 && !renderer.xr.isPresenting) { panelClock = 0; probeEl.textContent = probe.asText(); }
+    if (panelClock > 1000 && !renderer.xr.isPresenting && !probe.sessionSummary) { panelClock = 0; probeEl.textContent = probe.asText(); }
 
     renderer.render(scene, camera);
   });
