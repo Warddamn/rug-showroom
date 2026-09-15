@@ -59,4 +59,12 @@ No artwork, no construction packs, no wall of designs, no RugVault connection, n
 
 ## Pages URL
 
-Published automatically from the `main` branch by GitHub Actions. The address is `https://warddamn.github.io/rug-showroom/`.
+The address is `https://warddamn.github.io/rug-showroom/`.
+
+Publishing is one command on the Mac, run by Claude after every verified change:
+
+```bash
+npm run deploy
+```
+
+It builds the site and pushes the result to the `gh-pages` branch, which GitHub Pages serves over HTTPS. A ready-made GitHub Actions workflow is kept in `docs/pages-workflow.yml.txt`; moving it to `.github/workflows/pages.yml` would make GitHub build on every push instead, but that needs the GitHub login on this Mac to be granted the `workflow` permission first (`gh auth refresh -s workflow`, which opens a browser sign-in).

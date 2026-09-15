@@ -7,7 +7,8 @@
     "dev": "vite --mode https --port 5173",
     "dev:http": "vite --port 5174 --strictPort",
     "build": "vite build",
-    "preview": "vite preview --port 4173"
+    "preview": "vite preview --port 4173",
+    "deploy": "bash scripts/deploy.sh"
   },
   "keywords": [],
   "author": "",
